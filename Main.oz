@@ -206,41 +206,42 @@ fun {Infix2Prefix Data}
     end
 end
 
-class SuperComb
-    attr name args body
+class Expression
+    attr body bindings
 
     meth init
-        name := nil
-        args := nil
         body := nil
+        bindings := {New Store init}
     end
 
-    meth name($)
-        @name
+    meth nbinds($)
+        {@bindings size($)}
     end
 
-    meth nargs($)
-        {List.length @args}
+    meth bindings($)
+        @bindings
     end
 
-    meth args($)
-        @args
+    meth ids($)
+        {@bindings names($)}
     end
 
     meth body($)
         @body
     end
 
-    meth setName(Name)
-        name := Name
-    end
-
-    meth addArg(Name)
-        args := Name | @args
-    end
-
     meth setBody(Body)
         body := Body
+    end
+
+    meth addBinding(Id)
+        {@bindings add(Id {New Node init(Id)})}
+    end
+
+    meth bind(Id Expr)
+        local B = {Bindings find(Id $)} in
+            {B transplant(Expr)}
+        end
     end
 end
 
@@ -265,6 +266,14 @@ class Store
         local Encoded = {EncWithPrefix "store" Name} in
             {Dictionary.condGet @values Encoded nil}
         end
+    end
+
+    meth size($)
+        {List.length {Dictionary.keys @values}}
+    end
+
+    meth names($)
+        {Dictionary.keys @values}
     end
 end
 
@@ -292,10 +301,8 @@ fun {IsPrimitive C}
     {List.member C ["+" "-" "*" "/"]}
 end
 
-proc {ParseAlgebra Tokens ?Expr ?Remaining}
+proc {ParseAlgebra Tokens Expr ?Remaining}
     local
-        Bindings = {New Store init}
-
         proc {Scaffold Op Arg1 Arg2 ?NodeOut}
             local
                 Temp = {New Node init(app)}
@@ -325,12 +332,12 @@ proc {ParseAlgebra Tokens ?Expr ?Remaining}
                     if {List.all Head Char.isDigit} then
                         NodeOut = {New Node init({String.toInt Head})}
                     else
-                        local B = {Bindings find(Head $)} then
+                        local B = {{Expr bindings($)} find(Head $)} then
                             if B \= nil then
                                 NodeOut = B
                             else
                                 NodeOut = {New Node init(Head)}
-                                {Bindings add(Head NodeOut)}
+                                {{Expr bindings($)} add(Head NodeOut)}
                             end
                         end
                     end
@@ -339,29 +346,29 @@ proc {ParseAlgebra Tokens ?Expr ?Remaining}
             end
         end
     in
-        {Aux Tokens Expr Remaining}
+        local Body in
+            {Aux Tokens Body Remaining}
+            {Expr setBody(Body)}
+        end
     end
 end
 
 proc {ParseSuperComb Env Tokens ?Remaining}
     local
-        F = {New SuperComb init}
+        F = {New Expr init}
 
         proc {ParseArgs Tokens ?Remaining}
             local Args in
                 {List.takeDropWhile Args Remaining fun {$ X} X \= "=" end}
 
                 for A in Args do
-                    {F addArg(A)}
+                    {F addBinding(A)}
                 end
             end
         end
 
         proc {ParseBody Tokens ?Remaining}
-            local Expr in
-                {ParseAlgebra Tokens {F args($)} Expr Remaining}
-                {F setBody(Expr)}
-            end
+            {ParseAlgebra Tokens F Remaining}
         end
 
         proc {Aux Tokens ?Remaining}
@@ -369,16 +376,52 @@ proc {ParseSuperComb Env Tokens ?Remaining}
             of nil then nil
             [] Name | R then
                 local Break in
-                    {F setName(Name)}
                     {ParseArgs R Break}
-                    % Remember that the equal sign must be skipped
                     {ParseBody {Cdr Break} Remaining}
+                    {Env add(Name F)}
                 end
             end
         end
     in
         {Aux Tokens Remaining}
-        {Env add({F name($)} F)}
+    end
+end
+
+proc {Copy ExprIn ?ExprOut}
+    local
+        proc {Aux TreeIn Bindings ?TreeOut}
+            if TreeIn \= nil then
+                local
+                    V = {TreeIn val($)}
+                    Left
+                    Right
+                in
+                    if {Or {Number.is V} (V == app)} then
+                        TreeOut = {New Node init(V)}
+                    else
+                        local B = {Bindings find(V $)} in
+                            if B \= nil then
+                                TreeOut = B
+                            else
+                                TreeOut = {New Node init(V)}
+                                {Bindings add(V TreeOut)}
+                            end
+                        end
+                    end
+                    {Aux {Current left($)} Bindings Left}
+                    {Aux {Current right($)} Bindings Right}
+                    {TreeOut setLeft(Left)}
+                    {TreeOut setRight(Right)}
+                end
+            else
+                TreeOut = nil
+            end
+        end
+        Body
+    in
+        ExprOut = {New Expr init}
+        {Aux {ExprIn body($)} {ExprOut bindings($)} Body}
+        {ExprOut setBody(Body)}
     end
 end
 
@@ -414,16 +457,18 @@ end
 
 proc {ZipArgs Root F}
     local
+        C = {Copy F}
+
         proc {Aux Current Args} 
             case Args
             of nil then skip
             [] H | R then
-                {F replaceArg(H {Current right($)})}
+                {C bind(H {Current right($)})}
                 {Aux {Current left($)} R}
             end
         end
     in
-        {Aux Root {F args($)}}
+        {Root transplant({C body($)})}
     end
 end
 
