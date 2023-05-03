@@ -6,11 +6,11 @@ Preorder
 LexAux
 Lex
 Infix2Prefix
-Function
+SuperComb
 EncWithPrefix
 FeedFile
 ReadFile
-IsOperator
+IsPrimitive
 ParseAlgebra
 % ParseSuperComb
 % ParseCall
@@ -68,6 +68,12 @@ class Node
 
     meth right($)
         @right
+    end
+
+    meth transplant(R)
+        {self setVal({R val($)})}
+        {self setLeft({R left($)})}
+        {self setRight({R right($)})}
     end
 end
 
@@ -200,7 +206,7 @@ fun {Infix2Prefix Data}
     end
 end
 
-class Function
+class SuperComb
     attr name args body
 
     meth init
@@ -229,8 +235,8 @@ class Function
         name := Name
     end
 
-    meth addArg(Arg)
-        args := Arg | @args
+    meth addArg(Name)
+        args := Name | @args
     end
 
     meth setBody(Body)
@@ -282,13 +288,13 @@ proc {ReadFile Path ?Result}
     end
 end
 
-fun {IsOperator C}
+fun {IsPrimitive C}
     {List.member C ["+" "-" "*" "/"]}
 end
 
 proc {ParseAlgebra Tokens ?Expr ?Remaining}
     local
-        ArgNodes = {New Store init}
+        Bindings = {New Store init}
 
         proc {Scaffold Op Arg1 Arg2 ?NodeOut}
             local
@@ -309,7 +315,7 @@ proc {ParseAlgebra Tokens ?Expr ?Remaining}
             case Tokens
             of nil then Remaining = nil
             [] Head | Rest then
-                if {IsOperator Head} then
+                if {IsPrimitive Head} then
                     local Arg1 Arg2 Break in
                         {Aux Rest Arg1 Break}
                         {Aux Break Arg2 Remaining}
@@ -319,12 +325,12 @@ proc {ParseAlgebra Tokens ?Expr ?Remaining}
                     if {List.all Head Char.isDigit} then
                         NodeOut = {New Node init({String.toInt Head})}
                     else
-                        local Arg = {ArgNodes find(Head $)} in
-                            if Arg \= nil then
-                                NodeOut = Arg
+                        local B = {Bindings find(Head $)} then
+                            if B \= nil then
+                                NodeOut = B
                             else
                                 NodeOut = {New Node init(Head)}
-                                {ArgNodes add(Head NodeOut)}
+                                {Bindings add(Head NodeOut)}
                             end
                         end
                     end
@@ -337,27 +343,24 @@ proc {ParseAlgebra Tokens ?Expr ?Remaining}
     end
 end
 
-/*
-proc {ParseSuperComb Tokens ?Remaining}
+proc {ParseSuperComb Env Tokens ?Remaining}
     local
-        F = {New Function init}
+        F = {New SuperComb init}
 
         proc {ParseArgs Tokens ?Remaining}
             local Args in
-                {List.takeDropWhile Args Remaining}
+                {List.takeDropWhile Args Remaining fun {$ X} X \= "=" end}
 
-                if Args \= nil then
-                    for Arg in {String.tokens Args & } do
-                        {F addArg(Arg)}
-                    end
+                for A in Args do
+                    {F addArg(A)}
                 end
             end
         end
 
         proc {ParseBody Tokens ?Remaining}
-            local Root in
-                {ParseAlgebraicExpr Tokens Root Remaining}
-                {F setBody(Root)}
+            local Expr in
+                {ParseAlgebra Tokens {F args($)} Expr Remaining}
+                {F setBody(Expr)}
             end
         end
 
@@ -366,18 +369,18 @@ proc {ParseSuperComb Tokens ?Remaining}
             of nil then nil
             [] Name | R then
                 local Break in
-                    {F setName(H)}
+                    {F setName(Name)}
                     {ParseArgs R Break}
-                    {ParseBody Break Remaining}
+                    % Remember that the equal sign must be skipped
+                    {ParseBody {Cdr Break} Remaining}
                 end
             end
         end
     in
         {Aux Tokens Remaining}
-        {Env add(F)}
+        {Env add({F name($)} F)}
     end
 end
-*/
 
 % A tree is built in curried fashion
 /*
@@ -409,12 +412,31 @@ fun {FindNext Expr}
     end
 end
 
-/*
-fun {EvalSuperComb}
+proc {ZipArgs Root F}
+    local
+        proc {Aux Current Args} 
+            case Args
+            of nil then skip
+            [] H | R then
+                {F replaceArg(H {Current right($)})}
+                {Aux {Current left($)} R}
+            end
+        end
+    in
+        {Aux Root {F args($)}}
+    end
 end
-*/
 
-proc {EvalPrimitive Primitive Stack}
+fun {ReplaceSuperComb Env Name Stack}
+    local
+        F = {Env find(Name $)}
+        Root = {Car {List.drop Stack {F nargs($)}}}
+    in
+        {ZipArgs Root F}
+    end
+end
+
+proc {EvalPrimitive Env Primitive Stack}
     local
         Op = case Primitive
             of "+" then fun {$ X Y} X + Y end
@@ -427,30 +449,33 @@ proc {EvalPrimitive Primitive Stack}
 
         Arg1 = {{Root left($)} right($)}
         Arg2 = {Root right($)}
+        Result
     in
         if {Not {Arg1 isEval($)}} then
-            {Eval Arg1}
+            {Eval Env Arg1}
         end
 
         if {Not {Arg2 isEval($)}} then
-            {Eval Arg2}
+            {Eval Env Arg2}
         end
 
-        {Root setVal({Op {Arg1 val($)} {Arg2 val($)}})}
+        Result = {Op {Arg1 val($)} {Arg2 val($)}}
+        {Root setVal(Result)}
         {Root setLeft(nil)}
         {Root setRight(nil)}
     end
 end
 
-proc {Eval Expr}
+proc {Eval Env Expr}
     local
         Stack = {FindNext Expr}
-        Outermost = {Car Stack}
-        Name = {Outermost val($)}
+        Name = {{Car Stack} val($)}
     in
-        % If primitive, evaluate
-        if {IsOperator Name} then
-            {EvalPrimitive Name Stack}
+        if {IsPrimitive Name} then
+            {EvalPrimitive Env Name Stack}
+        else
+            {ReplaceSuperComb Env Name Stack}
+            {Eval Expr}
         end
     end
 end
