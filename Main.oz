@@ -6,14 +6,14 @@ Preorder
 LexAux
 Lex
 Infix2Prefix
-SuperComb
+Expression
 EncWithPrefix
 FeedFile
 ReadFile
 IsPrimitive
 ParseAlgebra
-% ParseSuperComb
-% ParseCall
+ParseSuperComb
+ParseCall
 FindNext
 EvalPrimitive
 Eval
@@ -239,7 +239,7 @@ class Expression
     end
 
     meth bind(Id Expr)
-        local B = {Bindings find(Id $)} in
+        local B = {@bindings find(Id $)} in
             {B transplant(Expr)}
         end
     end
@@ -332,7 +332,7 @@ proc {ParseAlgebra Tokens Expr ?Remaining}
                     if {List.all Head Char.isDigit} then
                         NodeOut = {New Node init({String.toInt Head})}
                     else
-                        local B = {{Expr bindings($)} find(Head $)} then
+                        local B = {{Expr bindings($)} find(Head $)} in 
                             if B \= nil then
                                 NodeOut = B
                             else
@@ -355,7 +355,7 @@ end
 
 proc {ParseSuperComb Env Tokens ?Remaining}
     local
-        F = {New Expr init}
+        F = {New Expression init}
 
         proc {ParseArgs Tokens ?Remaining}
             local Args in
@@ -373,7 +373,7 @@ proc {ParseSuperComb Env Tokens ?Remaining}
 
         proc {Aux Tokens ?Remaining}
             case Tokens
-            of nil then nil
+            of nil then Remaining = nil
             [] Name | R then
                 local Break in
                     {ParseArgs R Break}
@@ -408,8 +408,8 @@ proc {Copy ExprIn ?ExprOut}
                             end
                         end
                     end
-                    {Aux {Current left($)} Bindings Left}
-                    {Aux {Current right($)} Bindings Right}
+                    {Aux {TreeIn left($)} Bindings Left}
+                    {Aux {TreeIn right($)} Bindings Right}
                     {TreeOut setLeft(Left)}
                     {TreeOut setRight(Right)}
                 end
@@ -419,27 +419,29 @@ proc {Copy ExprIn ?ExprOut}
         end
         Body
     in
-        ExprOut = {New Expr init}
+        ExprOut = {New Expression init}
         {Aux {ExprIn body($)} {ExprOut bindings($)} Body}
         {ExprOut setBody(Body)}
     end
 end
 
-% A tree is built in curried fashion
-/*
-proc {ParseCall Tokens}
+fun {ParseCall Tokens}
     local
-        proc {Aux Tokens}
-            local H | R = Tokens in
-                if R \= nil then app(H {Aux R})
-                else H end
+        fun {Aux Tokens TreePrev}
+            case Tokens
+            of nil then TreePrev
+            [] H | R then
+                local Chain = {New Node init(app)} in
+                    {Chain setLeft(TreePrev)}
+                    {Chain setRight({New Node init(H)})}
+                    {Aux R Chain}
+                end
             end
         end
     in
-        {Aux Tokens}
+        {Aux {Cdr Tokens} {New Node init({Car Tokens})}}
     end
 end
-*/
 
 fun {FindNext Expr}
     local
@@ -468,11 +470,12 @@ proc {ZipArgs Root F}
             end
         end
     in
+        {Aux Root {F ids($)}}
         {Root transplant({C body($)})}
     end
 end
 
-fun {ReplaceSuperComb Env Name Stack}
+proc {ReplaceSuperComb Env Name Stack}
     local
         F = {Env find(Name $)}
         Root = {Car {List.drop Stack {F nargs($)}}}
@@ -520,7 +523,7 @@ proc {Eval Env Expr}
             {EvalPrimitive Env Name Stack}
         else
             {ReplaceSuperComb Env Name Stack}
-            {Eval Expr}
+            {Eval Env Expr}
         end
     end
 end
@@ -528,11 +531,12 @@ end
 proc {Test}
     local
         Tokens = {FeedFile "./testcases/simple.txt"}
+        Env = {New Store init}
         Expr
         Remaining
     in
         {ParseAlgebra Tokens Expr Remaining}
-        {Eval Expr}
+        {Eval Env Expr}
         {Preorder Expr}
     end
 end
