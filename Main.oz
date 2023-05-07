@@ -1,23 +1,43 @@
 declare
+
+% Utilities
 Car
 Cdr
-Node
-Preorder
+EncWithPrefix
+Store
+ReadFile
+IsPrimitive
+IsANumber
+BuildTree
+
+% String processing
 LexAux
 Lex
 Infix2Prefix
-Expression
-EncWithPrefix
-FeedFile
-ReadFile
-IsPrimitive
-ParseAlgebra
+
+% Node
+Node
+Preorder
+
+% Template
+Template
+
+% Parsing
+ParseBody
 ParseSuperComb
 ParseCall
+ParseProgram
+
+% Expression reduction
 FindNext
-EvalPrimitive
-Eval
+Instantiate
+ReplaceSuperComb
+ReducePrimitive
+Reduce
+
 Test
+
+% Utilities
 
 fun {Car L}
     case L 
@@ -33,71 +53,107 @@ fun {Cdr L}
     end
 end
 
-class Node
-    attr val left right
-    
-    meth init(Value)
-        val := Value
-        left := nil
-        right := nil
+fun {EncWithPrefix Prefix Str}
+    {String.toAtom {List.append Prefix {List.append "_" Str}}}
+end
+
+class Store
+    attr values
+
+    meth init
+        values := {Dictionary.new}
     end
 
-    meth setLeft(Left)
-        left := Left
+    meth add(Name Value)
+        local Encoded = {EncWithPrefix "store" Name} in
+            {Dictionary.put @values Encoded Value}
+        end
     end
 
-    meth setRight(Right)
-        right := Right
+    meth find(Name $)
+        local Encoded = {EncWithPrefix "store" Name} in
+            {Dictionary.condGet @values Encoded nil}
+        end
     end
 
-    meth val($)
-        @val
-    end
-
-    meth isEval($)
-        {Number.is @val}
-    end
-
-    meth setVal(Value)
-        val := Value
-    end
-
-    meth left($)
-        @left
-    end
-
-    meth right($)
-        @right
-    end
-
-    meth transplant(R)
-        {self setVal({R val($)})}
-        {self setLeft({R left($)})}
-        {self setRight({R right($)})}
+    meth has(Name $)
+        local Encoded = {EncWithPrefix "store" Name} in
+            {Dictionary.member @values Encoded}
+        end
     end
 end
 
-proc {Preorder Node}
+proc {ReadFile Path ?Result}
+    local F in
+        F = {New Open.file init(name:Path flags:[read])}
+        {F read(list:Result size:all)}
+        {F close}
+    end
+end
+
+fun {IsPrimitive C}
+    {List.member C ["+" "-" "*" "/"]}
+end
+
+fun {IsANumber Str}
     local
-        fun {Aux Node Acc}
-            if Node \= nil then
-                local Step1 Step2 in
-                    Step1 = {Node val($)} | Acc
-                    Step2 = {Aux {Node left($)} Step1}
-                    {Aux {Node right($)} Step2}
+        AllDigits = fun {$ Y} {List.all Y Char.isDigit} end
+        IntPart
+        DecPart
+    in
+        {List.takeDropWhile Str fun {$ X} X \= &. end IntPart DecPart}
+        {And {AllDigits IntPart} {AllDigits DecPart}}
+    end
+end
+
+proc {BuildTree Env Joiner Lifter Tokens ?TreeOut}
+    local
+        fun {Join Trees}
+            {List.foldL Trees Joiner nil}
+        end
+
+        proc {Aux Tokens TreePrev ?TreeOut ?Remaining}
+            case Tokens
+            of nil then Remaining = nil
+            [] H | R then
+                if {Or {IsPrimitive H} {Env has(H $)}} then
+                    local
+                        Break = {NewCell R}
+                        Trees = {NewCell [{Lifter H}]}
+                        N = if {IsPrimitive H} then 2 else {List.length {{Env find(H $)} args($)}} end
+                    in
+                        for I in 1..N do
+                            local Tr B in
+                                {Aux @Break nil Tr B}
+                                Trees := Tr | @Trees
+                                Break := B
+                            end
+                        end
+                        TreeOut = {Join (TreePrev | {List.reverse @Trees})}
+                        Remaining = @Break
+                    end
+                else
+                    local ToLift = if {IsANumber H} then {String.toFloat H} else H end in
+                        TreeOut = {Joiner TreePrev {Lifter ToLift}}
+                    end
+                    Remaining = R
                 end
-            else
-                Acc
             end
         end
+
+        Dummy
     in
-        {Browse {List.reverse {Aux Node nil}}}
+        {Aux {Infix2Prefix Tokens} nil TreeOut Dummy}
     end
 end
+
+%------------
+
+% String processing
 
 fun {LexAux Stream Tokens Carry}
     local
-        Keywords = ["fun" "var" "in" "+" "-" "*" "/" "=" "(" ")"]
+        Keywords = ["fun" "let" "in" "+" "-" "*" "/" "=" "(" ")"]
 
         fun {CaptureSymbol}
             if Carry \= nil then {Reverse Carry} | Tokens
@@ -206,24 +262,107 @@ fun {Infix2Prefix Data}
     end
 end
 
-class Expression
-    attr body bindings
+%------------
+
+% Node related definitions
+
+class Node
+    attr val left right
+    
+    meth init(Value)
+        val := Value
+        left := nil
+        right := nil
+    end
+
+    meth setLeft(Left)
+        left := Left
+    end
+
+    meth setRight(Right)
+        right := Right
+    end
+
+    meth val($)
+        @val
+    end
+
+    meth isReduce($)
+        {Number.is @val}
+    end
+
+    meth setVal(Value)
+        val := Value
+    end
+
+    meth left($)
+        @left
+    end
+
+    meth right($)
+        @right
+    end
+
+    meth replace(R)
+        {self setVal({R val($)})}
+        {self setLeft({R left($)})}
+        {self setRight({R right($)})}
+    end
+end
+
+proc {Preorder Node}
+    local
+        fun {Aux Node Acc}
+            if Node \= nil then
+                local Step1 Step2 in
+                    Step1 = {Node val($)} | Acc
+                    Step2 = {Aux {Node left($)} Step1}
+                    {Aux {Node right($)} Step2}
+                end
+            else
+                Acc
+            end
+        end
+    in
+        {Browse {List.reverse {Aux Node nil}}}
+    end
+end
+
+%-------------
+
+% Template related definitions
+
+class Template
+    attr args bindings body
 
     meth init
+        args := nil
+        bindings := {Dictionary.new}
         body := nil
-        bindings := {New Store init}
     end
 
-    meth nbinds($)
-        {@bindings size($)}
+    meth args($)
+        @args
     end
 
-    meth bindings($)
-        @bindings
+    meth setArgs(Args)
+        args := Args
     end
 
-    meth ids($)
-        {@bindings names($)}
+    meth hasArg(Name $)
+        {List.member Name @args}
+    end
+
+    meth addBinding(Id Body)
+        local Encoded = {EncWithPrefix "binding" Id} in
+            {Dictionary.put @bindings Encoded Body}
+        end
+    end
+
+    meth hasBinding(Id $)
+        local Encoded = {EncWithPrefix "binding" Id} in
+            {Dictionary.member @bindings Encoded}
+        end
     end
 
     meth body($)
@@ -233,223 +372,17 @@ class Expression
     meth setBody(Body)
         body := Body
     end
-
-    meth addBinding(Id)
-        {@bindings add(Id {New Node init(Id)})}
-    end
-
-    meth bind(Id Expr)
-        local B = {@bindings find(Id $)} in
-            {B transplant(Expr)}
-        end
-    end
 end
 
-fun {EncWithPrefix Prefix Str}
-    {String.toAtom {List.append Prefix Str}}
-end
+%-------------
 
-class Store
-    attr values
-
-    meth init
-        values := {Dictionary.new}
-    end
-
-    meth add(Name Value)
-        local Encoded = {EncWithPrefix "store" Name} in
-            {Dictionary.put @values Encoded Value}
-        end
-    end
-
-    meth find(Name $)
-        local Encoded = {EncWithPrefix "store" Name} in
-            {Dictionary.condGet @values Encoded nil}
-        end
-    end
-
-    meth size($)
-        {List.length {Dictionary.keys @values}}
-    end
-
-    meth names($)
-        {Dictionary.keys @values}
-    end
-end
-
-fun {FeedFile Path}
-    local
-        Stream
-        Tokens
-        Processed
-    in
-        {ReadFile Path Stream}
-        Tokens = {Lex Stream}
-        {Infix2Prefix Tokens}
-    end
-end
-
-proc {ReadFile Path ?Result}
-    local F in
-        F = {New Open.file init(name:Path flags:[read])}
-        {F read(list:Result size:all)}
-        {F close}
-    end
-end
-
-fun {IsPrimitive C}
-    {List.member C ["+" "-" "*" "/"]}
-end
-
-proc {ParseAlgebra Tokens Expr ?Remaining}
-    local
-        proc {Scaffold Op Arg1 Arg2 ?NodeOut}
-            local
-                Temp = {New Node init(app)}
-                OpNode = {New Node init(Op)}
-            in
-                NodeOut = {New Node init(app)}
-                {NodeOut setRight(Arg2)}
-
-                {Temp setLeft(OpNode)}
-                {Temp setRight(Arg1)}
-
-                {NodeOut setLeft(Temp)}
-            end
-        end
-
-        proc {Aux Tokens ?NodeOut ?Remaining}
-            case Tokens
-            of nil then Remaining = nil
-            [] Head | Rest then
-                if {IsPrimitive Head} then
-                    local Arg1 Arg2 Break in
-                        {Aux Rest Arg1 Break}
-                        {Aux Break Arg2 Remaining}
-                        {Scaffold Head Arg1 Arg2 NodeOut}
-                    end
-                else
-                    if {List.all Head Char.isDigit} then
-                        NodeOut = {New Node init({String.toInt Head})}
-                    else
-                        local B = {{Expr bindings($)} find(Head $)} in 
-                            if B \= nil then
-                                NodeOut = B
-                            else
-                                NodeOut = {New Node init(Head)}
-                                {{Expr bindings($)} add(Head NodeOut)}
-                            end
-                        end
-                    end
-                    Remaining = Rest
-                end
-            end
-        end
-    in
-        local Body in
-            {Aux Tokens Body Remaining}
-            {Expr setBody(Body)}
-        end
-    end
-end
-
-proc {ParseSuperComb Env Tokens ?Remaining}
-    local
-        F = {New Expression init}
-
-        proc {ParseArgs Tokens ?Remaining}
-            local Args in
-                {List.takeDropWhile Args Remaining fun {$ X} X \= "=" end}
-
-                for A in Args do
-                    {F addBinding(A)}
-                end
-            end
-        end
-
-        proc {ParseBody Tokens ?Remaining}
-            {ParseAlgebra Tokens F Remaining}
-        end
-
-        proc {Aux Tokens ?Remaining}
-            case Tokens
-            of nil then Remaining = nil
-            [] Name | R then
-                local Break in
-                    {ParseArgs R Break}
-                    {ParseBody {Cdr Break} Remaining}
-                    {Env add(Name F)}
-                end
-            end
-        end
-    in
-        {Aux Tokens Remaining}
-    end
-end
-
-proc {Copy ExprIn ?ExprOut}
-    local
-        proc {Aux TreeIn Bindings ?TreeOut}
-            if TreeIn \= nil then
-                local
-                    V = {TreeIn val($)}
-                    Left
-                    Right
-                in
-                    if {Or {Number.is V} (V == app)} then
-                        TreeOut = {New Node init(V)}
-                    else
-                        local B = {Bindings find(V $)} in
-                            if B \= nil then
-                                TreeOut = B
-                            else
-                                TreeOut = {New Node init(V)}
-                                {Bindings add(V TreeOut)}
-                            end
-                        end
-                    end
-                    {Aux {TreeIn left($)} Bindings Left}
-                    {Aux {TreeIn right($)} Bindings Right}
-                    {TreeOut setLeft(Left)}
-                    {TreeOut setRight(Right)}
-                end
-            else
-                TreeOut = nil
-            end
-        end
-        Body
-    in
-        ExprOut = {New Expression init}
-        {Aux {ExprIn body($)} {ExprOut bindings($)} Body}
-        {ExprOut setBody(Body)}
-    end
-end
-
-fun {ParseCall Tokens}
-    local
-        fun {Aux Tokens TreePrev}
-            case Tokens
-            of nil then TreePrev
-            [] H | R then
-                local Chain = {New Node init(app)} in
-                    {Chain setLeft(TreePrev)}
-                    {Chain setRight({New Node init(H)})}
-                    {Aux R Chain}
-                end
-            end
-        end
-    in
-        {Aux {Cdr Tokens} {New Node init({Car Tokens})}}
-    end
-end
+% Expression evaluation 
 
 fun {FindNext Expr}
     local
         fun {Aux Current Acc}
-            if Current \= nil then
-                {Aux {Current left($)} (Current | Acc)}
-            else
-                Acc
+            if Current == nil then Acc
+            else {Aux {Current left($)} (Current | Acc)}
             end
         end
     in
@@ -457,34 +390,76 @@ fun {FindNext Expr}
     end
 end
 
-proc {ZipArgs Root F}
+% Arguably the most important method throughout the whole program
+proc {Instantiate Temp Root}
     local
-        C = {Copy F}
+        ArgBindings = {New Store init}
+        IntBindings = {New Store init}
 
-        proc {Aux Current Args} 
+        proc {Aux NodeIn ?NodeOut}
+            case NodeIn
+            of nil then NodeOut = nil
+            [] app(L R) then
+                local Left Right in
+                    {Aux L Left}
+                    {Aux R Right}
+                    NodeOut = {New Node init(app)}
+                    {NodeOut setLeft(Left)}
+                    {NodeOut setRight(Right)}
+                end
+            [] Value then
+                if {Or {Number.is Value} {IsPrimitive Value}} then
+                    NodeOut = {New Node init(Value)}
+                elseif {Temp hasBinding(Value $)} then
+                    if {IntBindings has(Value $)} then
+                        NodeOut = {IntBindings find(Value $)}
+                    else
+                        NodeOut = {Aux {Temp getBinding(Value $)}}
+                        {IntBindings add(Value NodeOut)}
+                    end
+                elseif {Temp hasArg(Value $)} then
+                    if {ArgBindings has(Value $)} then
+                        NodeOut = {ArgBindings find(Value $)}
+                    else
+                        NodeOut = {New Node init(Value)}
+                        {ArgBindings add(Value NodeOut)}
+                    end
+                end
+            end
+        end
+
+        proc {ZipArgs Current Args}
             case Args
             of nil then skip
             [] H | R then
-                {C bind(H {Current right($)})}
-                {Aux {Current left($)} R}
+                local
+                    AB = {ArgBindings find(H $)}
+                    ToZip = {Current right($)}
+                    Next = {Current left($)}
+                in
+                    {AB replace(ToZip)}
+                    {ZipArgs Next R}
+                end
             end
         end
+
+        Instance = {Aux {Temp body($)}}
     in
-        {Aux Root {F ids($)}}
-        {Root transplant({C body($)})}
+        {ZipArgs Root {List.reverse {Temp args($)}}}
+        {Root replace(Instance)}
     end
 end
 
-proc {ReplaceSuperComb Env Name Stack}
+proc {ReplaceSuperComb Env Stack Name}
     local
-        F = {Env find(Name $)}
-        Root = {Car {List.drop Stack {F nargs($)}}}
+        Temp = {Env find(Name $)}
+        Root = {Car {List.drop Stack {List.length {Temp args($)}}}}
     in
-        {ZipArgs Root F}
+        {Instantiate Temp Root}
     end
 end
 
-proc {EvalPrimitive Env Primitive Stack}
+proc {ReducePrimitive Env Stack Primitive}
     local
         Op = case Primitive
             of "+" then fun {$ X Y} X + Y end
@@ -494,51 +469,123 @@ proc {EvalPrimitive Env Primitive Stack}
         end
 
         Root = {Car {List.drop Stack 2}}
-
         Arg1 = {{Root left($)} right($)}
         Arg2 = {Root right($)}
-        Result
     in
-        if {Not {Arg1 isEval($)}} then
-            {Eval Env Arg1}
+        if {Not {Arg1 isReduce($)}} then
+            {Reduce Env Arg1}
         end
 
-        if {Not {Arg2 isEval($)}} then
-            {Eval Env Arg2}
+        if {Not {Arg2 isReduce($)}} then
+            {Reduce Env Arg2}
         end
 
-        Result = {Op {Arg1 val($)} {Arg2 val($)}}
-        {Root setVal(Result)}
         {Root setLeft(nil)}
         {Root setRight(nil)}
-    end
-end
 
-proc {Eval Env Expr}
-    local
-        Stack = {FindNext Expr}
-        Name = {{Car Stack} val($)}
-    in
-        if {IsPrimitive Name} then
-            {EvalPrimitive Env Name Stack}
-        else
-            {ReplaceSuperComb Env Name Stack}
-            {Eval Env Expr}
+        local Result = {Op {Arg1 val($)} {Arg2 val($)}} in
+            {Root setVal(Result)}
         end
     end
 end
 
-proc {Test}
+proc {Reduce Env Expr}
     local
-        Tokens = {FeedFile "./testcases/simple.txt"}
-        Env = {New Store init}
-        Expr
-        Remaining
+        Stack = {FindNext Expr}
+        Next = {{Car Stack} val($)}
+        IsSuperComb = fun {$ Name} {Env has(Name $)} end
     in
-        {ParseAlgebra Tokens Expr Remaining}
-        {Eval Env Expr}
-        {Preorder Expr}
+        if {IsPrimitive Next} then
+            {ReducePrimitive Env Stack Next}
+        elseif {IsSuperComb Next} then
+            {ReplaceSuperComb Env Stack Next}
+            {Reduce Env Expr}
+        end
     end
+end
+
+%-----------
+
+% Parsing
+
+proc {ParseBody Env Tokens ?Result}
+    local
+        fun {Joiner Prev Curr}
+            if Prev \= nil then
+                app(Prev Curr)
+            else
+                Curr
+            end
+        end
+
+        fun {Lifter Value}
+            Value
+        end
+    in
+        {BuildTree Env Joiner Lifter Tokens Result}
+    end
+end
+
+proc {ParseSuperComb Env Line}
+    local
+        Temp = {New Template init}
+        Parts = {String.tokens Line &=}
+        Sig = {Lex {List.nth Parts 1}}
+        Name | Args = Sig
+        Def = {Lex {List.nth Parts 2}}
+    in
+        {Temp setArgs(Args)}
+        {Temp setBody({ParseBody Env Def})}
+        {Env add(Name Temp)}
+    end
+end
+
+proc {ParseCall Env Line ?Expr}
+    local
+        proc {Joiner Prev Curr ?Joined}
+            if Prev \= nil then
+                Joined = {New Node init(app)}
+                {Joined setLeft(Prev)}
+                {Joined setRight(Curr)}
+            else
+                Joined = Curr
+            end
+        end
+
+        fun {Lifter Value}
+            {New Node init(Value)}
+        end
+
+        Tokens = {Lex Line}
+    in
+        {BuildTree Env Joiner Lifter Tokens Expr}
+    end
+end
+
+proc {ParseProgram Stream}
+    local
+        Lines = {String.tokens Stream &\n}
+        Size = {List.length Lines}
+        SuperCombs = {List.take Lines (Size-1)}
+        Call = {List.last Lines}
+
+        Env = {New Store init}
+    in
+        for S in SuperCombs do
+            {ParseSuperComb Env S}
+        end
+
+        local Expr = {ParseCall Env Call} in
+            {Reduce Env Expr}
+            {Preorder Expr}
+        end
+    end
+end
+
+%-----------
+
+proc {Test}
+    {ParseProgram {ReadFile "testcases/simple.txt"}}
 end
 
 {Test}
