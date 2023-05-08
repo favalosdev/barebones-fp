@@ -656,9 +656,10 @@ end
 %-----------
 
 proc {Test}
-    local Testcases = ["square.txt" "diffsquare.txt" "twice.txt" "fourtimes.txt" "noneval.txt"] in
+    local Testcases = ["square.txt" "diffsquare.txt" "twice.txt" "fourtimes.txt" "noneval.txt" "composition.txt"] in
         for T in Testcases do
             local Content = {List.append "testcases/" T} in
+                {Browse {List.append "Executing " T}}
                 {ParseProgram {ReadFile Content}}
             end
         end

@@ -1,0 +1,4 @@
+add x y = x + y
+mul x y = x * y
+proc x y = mul (add x y) (add x y)
+proc 2 3
