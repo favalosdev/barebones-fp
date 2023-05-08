@@ -1,0 +1,2 @@
+fourtimes x = let y = x*x in y+y
+fourtimes 2

@@ -32,8 +32,8 @@ ParseProgram
 FindNext
 Instantiate
 ReplaceSuperComb
-ReducePrimitive
-Reduce
+EvalPrimitive
+Eval
 
 Test
 
@@ -153,7 +153,7 @@ end
 
 fun {LexAux Stream Tokens Carry}
     local
-        Keywords = ["fun" "let" "in" "+" "-" "*" "/" "=" "(" ")"]
+        Keywords = ["let" "in" "+" "-" "*" "/" "=" "(" ")"]
 
         fun {CaptureSymbol}
             if Carry \= nil then {Reverse Carry} | Tokens
@@ -287,7 +287,7 @@ class Node
         @val
     end
 
-    meth isReduce($)
+    meth isEval($)
         {Number.is @val}
     end
 
@@ -365,6 +365,12 @@ class Template
         end
     end
 
+    meth getBinding(Id $)
+        local Encoded = {EncWithPrefix "binding" Id} in
+            {Dictionary.get @bindings Encoded}
+        end
+    end
+
     meth body($)
         @body
     end
@@ -378,6 +384,7 @@ end
 
 % Expression evaluation 
 
+% Finds the next primitive or supercombinator to reduce
 fun {FindNext Expr}
     local
         fun {Aux Current Acc}
@@ -390,7 +397,11 @@ fun {FindNext Expr}
     end
 end
 
-% Arguably the most important method throughout the whole program
+/*
+Takes a template, makes a copy, binds the arguments according to
+expression graph and return the modified graph with the instantia-
+ted template.
+*/
 proc {Instantiate Temp Root}
     local
         ArgBindings = {New Store init}
@@ -424,6 +435,12 @@ proc {Instantiate Temp Root}
                         NodeOut = {New Node init(Value)}
                         {ArgBindings add(Value NodeOut)}
                     end
+                else
+                    /*
+                    This guard has to be left in order to account
+                    for literals that are not binded
+                    */
+                    NodeOut = {New Node init(Value)}
                 end
             end
         end
@@ -450,6 +467,7 @@ proc {Instantiate Temp Root}
     end
 end
 
+% Finds an existing supercombinator and instantiates it
 proc {ReplaceSuperComb Env Stack Name}
     local
         Temp = {Env find(Name $)}
@@ -459,54 +477,81 @@ proc {ReplaceSuperComb Env Stack Name}
     end
 end
 
-proc {ReducePrimitive Env Stack Primitive}
+/*
+Evaluates a primitive by first checking if its
+arguments are evaluated and then carrying out
+the operation itself
+*/
+proc {EvalPrimitive Env Stack Primitive}
     local
         Op = case Primitive
             of "+" then fun {$ X Y} X + Y end
             [] "-" then fun {$ X Y} X - Y end
             [] "*" then fun {$ X Y} X * Y end
-            [] "/" then fun {$ X Y} X / Y end
+            [] "/" then fun {$ X Y} X / Y end   
         end
 
         Root = {Car {List.drop Stack 2}}
         Arg1 = {{Root left($)} right($)}
         Arg2 = {Root right($)}
     in
-        if {Not {Arg1 isReduce($)}} then
-            {Reduce Env Arg1}
+        % Try to evaluate the arguments
+
+        if {Not {Arg1 isEval($)}} then
+            {Eval Env Arg1}
         end
 
-        if {Not {Arg2 isReduce($)}} then
-            {Reduce Env Arg2}
+        if {Not {Arg2 isEval($)}} then
+            {Eval Env Arg2}
         end
 
-        {Root setLeft(nil)}
-        {Root setRight(nil)}
+        % Check if the arguments "collapsed" into a value
 
-        local Result = {Op {Arg1 val($)} {Arg2 val($)}} in
-            {Root setVal(Result)}
+        local
+            V1 = {Arg1 val($)}
+            V2 = {Arg2 val($)}
+        in
+            if {And {Number.is V1} {Number.is V2}} then
+                {Root setVal({Op V1 V2})}
+                {Root setLeft(nil)}
+                {Root setRight(nil)}
+            elseif {Number.is V1} then
+                {Root setLeft(V1)}
+            elseif {Number.is V2} then
+                {Root setRight(V2)}
+            end
         end
     end
 end
 
-proc {Reduce Env Expr}
+/*
+Evaluates an expression graph by doing the following:
+(1) Finding the next supercombinator or primitive to reduce
+(2) If it is a primitive, execute the method EvalPrimitive
+(3) If it is a supercombinator, replace its instantiated
+    template i.e. template with binded args in the expression
+    graph. Then call Eval once again.
+
+This method is performed until there is nothing more to reduce.
+ */
+proc {Eval Env Expr}
     local
         Stack = {FindNext Expr}
         Next = {{Car Stack} val($)}
         IsSuperComb = fun {$ Name} {Env has(Name $)} end
     in
         if {IsPrimitive Next} then
-            {ReducePrimitive Env Stack Next}
+            {EvalPrimitive Env Stack Next}
         elseif {IsSuperComb Next} then
             {ReplaceSuperComb Env Stack Next}
-            {Reduce Env Expr}
+            {Eval Env Expr}
         end
     end
 end
 
 %-----------
 
-% Parsing
+% Parsing: all this functions are pretty self-explanatory
 
 proc {ParseBody Env Tokens ?Result}
     local
@@ -526,16 +571,42 @@ proc {ParseBody Env Tokens ?Result}
     end
 end
 
+proc {ParseBinding Env Temp Tokens}
+    local
+        "let" | Name | R = Tokens
+        Algebra = {ParseBody Env R}
+    in
+        {Temp addBinding(Name Algebra)}
+    end
+end
+
 proc {ParseSuperComb Env Line}
     local
         Temp = {New Template init}
         Parts = {String.tokens Line &=}
+
         Sig = {Lex {List.nth Parts 1}}
         Name | Args = Sig
-        Def = {Lex {List.nth Parts 2}}
+        
+        Def = {Lex {List.foldL {Cdr Parts} List.append nil}}
     in
         {Temp setArgs(Args)}
-        {Temp setBody({ParseBody Env Def})}
+
+        % This is an ugly hack but hey, it gets the job done
+        local Algebra in 
+            if {List.member "in" Def} then
+                local Binding Rest in
+                    {List.takeDropWhile Def fun {$ X} X \= "in" end Binding Rest}
+                    {ParseBinding Env Temp Binding}
+                    Algebra = {Cdr Rest}
+                end
+            else
+                Algebra = Def
+            end
+
+            {Temp setBody({ParseBody Env Algebra})}
+        end
+
         {Env add(Name Temp)}
     end
 end
@@ -576,7 +647,7 @@ proc {ParseProgram Stream}
         end
 
         local Expr = {ParseCall Env Call} in
-            {Reduce Env Expr}
+            {Eval Env Expr}
             {Preorder Expr}
         end
     end
@@ -585,7 +656,13 @@ end
 %-----------
 
 proc {Test}
-    {ParseProgram {ReadFile "testcases/simple.txt"}}
+    local Testcases = ["square.txt" "diffsquare.txt" "twice.txt" "fourtimes.txt" "noneval.txt"] in
+        for T in Testcases do
+            local Content = {List.append "testcases/" T} in
+                {ParseProgram {ReadFile Content}}
+            end
+        end
+    end
 end
 
 {Test}
